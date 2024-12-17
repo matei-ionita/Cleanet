@@ -1,0 +1,163 @@
+---
+title: "Cleanet for Mass Cytometry"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Cleanet for Mass Cytometry}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+```{r setup}
+library(Cleanet)
+library(readr)
+library(dplyr)
+library(ggplot2)
+```
+
+Thank you for using Cleanet, an unsupervised method for doublet identification
+and classification. This tutorial will walk you through a standard Cleanet
+workflow for mass cytometry data. Most of the steps would be the same for 
+flow cytometry data, with the exception of debris depletion, which is more
+straightforward in that case, because of the scattering channels.
+
+We start by loading some example data. These 10,000 events come from the
+whole blood of a healthy donor, profiled by CyTOF at the University of
+Pennsylvania, using the 30-parameter MDIPA panel. There are also two DNA
+intercalator channels and one channel providing cell type annotations.
+Channels have been renamed for convenience.
+```{r read_data}
+path <- system.file("extdata", "df_mdipa.csv", package="Cleanet")
+df_mdipa <- read_csv(path, col_types=cols())
+print(df_mdipa)
+```
+
+The minimal information necessary to run Cleanet is a data frame and a set of
+columns to use for doublet detection.
+```{r cleanet_basic}
+cols <- c("CD45", "CD123", "CD19", "CD11c", "CD16",
+          "CD56", "CD294", "CD14", "CD3", "CD20",
+          "CD66b", "CD38", "HLA-DR", "CD45RA",
+          "DNA1", "DNA2")
+cleanet_res <- cleanet(df_mdipa, cols, cofactor=5)
+```
+
+The output is a list containing, alongside other model information,
+a binary array specifying predictions for all events.
+```{r cleanet_basic_status}
+print(table(cleanet_res$status))
+```
+
+The sensitivity value is the fraction of simulated doublets that Cleanet
+correctly classifies as doublets. It is an internal measure of model confidence.
+```{r cleanet_basic_sensitivity}
+print(cleanet_res$sensitivity)
+```
+
+We can verify the predictions on a DNA/CD45 bivariate plot: events predicted
+to be doublets have higher values for DNA1, as expected.
+```{r bivariate_basic}
+ggplot(df_mdipa, aes(x=asinh(DNA1/5), y=asinh(CD45/5), color=cleanet_res$status)) +
+  geom_point(size=0.2) +
+  scale_color_discrete(name="Status") +
+  theme_bw()
+```
+
+If there is a lot of debris in the sample,
+the simulation performed by Cleanet can fail: a singlet plus a debris event
+fail to add up to a doublet. In our file, debris is only 10% of all events,
+which is acceptable. In general, results can be improved by flagging (some of)
+the debris events, so that Cleanet knows to exclude them in the simulation.
+There is a helper function designed for this, which gives visual feedback.
+
+```{r debris_default}
+is_debris <- filter_debris_cytof(df_mdipa, cols)
+```
+
+There is a scalar parameter with values between 0 and 1 
+that can be tuned to flag fewer or more events as debris. The default
+value of 0.3 works well for MDIPA, but a different one may be appropriate for
+your panel.
+
+```{r debris_custom}
+is_debris <- filter_debris_cytof(df_mdipa, cols, threshold = 0.35)
+```
+
+Including the information about debris in the input can help Cleanet make
+better predictions. The impact is greater for samples that contain large
+proportions of debris.
+
+```{r cleanet_filtered}
+cleanet_res <- cleanet(df_mdipa, cols, cofactor=5, is_debris=is_debris)
+print(cleanet_res$sensitivity)
+
+ggplot(df_mdipa, aes(x=asinh(DNA1/5), y=asinh(CD45/5), color=cleanet_res$status)) +
+  geom_point(size=0.2) +
+  scale_color_discrete(name="Status") +
+  theme_bw()
+```
+
+The CD294 distribution in the sample shows two groups of CD294 positive cells: basophils to
+the left, eosinophils to the right. In particular, eosinophils have DNA1 values
+that are similar to those of doublets, making them challenging to distinguish
+from doublets in bivariate gating. As a multivariate method, Cleanet has no
+trouble classifying them as singlets.
+
+```{r CD294}
+ggplot(df_mdipa, aes(x=asinh(DNA1/5), y=asinh(CD45/5), color=asinh(CD294/5))) +
+  geom_point(size=0.2) +
+  scale_color_gradient(low="black", high="red") +
+  theme_bw()
+```
+
+Now assume that you have isolated the singlets and classified them, using
+your favorite manual or automated method. For our example data, this
+information is stored in the `label` column. Here is the breakdown among
+cell types.
+
+```{r label}
+print(table(df_mdipa$label))
+```
+
+Cleanet can use this information to extend the classification of singlets
+into a classification of doublets (and higher multiplets). The label information
+for singlets only must be extracted and passed to the `classify_doublets` 
+function. We will tabulate the output by doublet type.
+
+```{r classify_doublets}
+singlet_clas <- df_mdipa$label[which(cleanet_res$status!="Doublet")]
+doublet_clas <- classify_doublets(cleanet_res, singlet_clas)
+sort(table(doublet_clas))
+```
+
+Neutrophils account for ~50% of singlets in whole blood. Unsurprisingly, then, 
+they are also involved in most of the multiplets. To generalize this intuition,
+we can compute expected proportions of doublet types, by multiplying the
+frequencies of the components. The function `compare_doublets_exp_obs`
+does this and returns the proportions of expected and observed doublets as a
+data frame.
+
+```{r compare}
+df_exp_obs <- compare_doublets_exp_obs(doublet_clas, singlet_clas, cleanet_res)
+arrange(df_exp_obs, -Expected)
+```
+
+A quick plot can help us compare expected and observed proportions.
+
+```{r compare_plot}
+ggplot(df_exp_obs, aes(x=Expected, y=Observed)) +
+  geom_point() +
+  geom_abline(slope=1, yintercept=0, linetype="dotted") +
+  theme_bw()
+```
+
+In this case, expected and observed proportions match very well. Large
+deviations from the diagonal could be caused by technical factors, or by
+biological ones such as interactions between specific cell types.
+
