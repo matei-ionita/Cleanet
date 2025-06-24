@@ -10,4 +10,6 @@
 #' @importFrom magrittr %>%
 #' @importFrom methods show
 #' @importFrom stats setNames
+#' @importFrom flowCore flowFrame exprs parameters keyword `keyword<-`
+#' @importFrom Biobase AnnotatedDataFrame
 NULL

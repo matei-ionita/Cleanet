@@ -265,3 +265,41 @@ compare_doublets_exp_obs <- function(doublet_clas, singlet_clas, cleanet_res) {
 }
 
 
+#' @title Add doublet identity to a flowFrame
+#' @description Update a given flowFrame to include another channel
+#' with values 0 for singlets and 1 for doublets. All other parameters
+#' and keywords are preserved.
+#' @param ff An input flowFrame.
+#' @param cleanet_res The output of a Cleanet analysis; the number of events
+#' must match that in the flowFrame.
+#' @returns An updated flowFrame.
+#' @export
+add_doublet_parameter <- function(ff, cleanet_res) {
+
+  status <- as.matrix(if_else(cleanet_res$status=="Doublet", 1, 0),ncol=1)
+  colnames(status) <- "IsDoublet"
+
+  if (nrow(ff) != nrow(status))
+    stop("Provided flowFrame and Cleanet object must have the same number of events!")
+
+  params <- parameters(ff)@data
+  params_update <- data.frame(
+    name = "IsDoublet",
+    desc = "IsDoublet",
+    range = 2,
+    minRange = 0,
+    maxRange = 1
+  )
+
+  params_new <- AnnotatedDataFrame(rbind(params, params_update))
+  expr_mat_new <- cbind(exprs(ff), status)
+
+  ff_new <- flowFrame(expr_mat_new, params_new)
+  keyword(ff_new) <- keyword(ff)
+
+  return(ff_new)
+}
+
+
+
+
